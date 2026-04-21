@@ -1,5 +1,6 @@
 using Spectre.Console;
 using SpiceTrade.Application.Services;
+using SpiceTrade.Core;
 using SpiceTrade.Core.Entities;
 using SpiceTrade.Core.Enums;
 using SpiceTrade.Core.Interfaces;
@@ -14,15 +15,19 @@ namespace SpiceTrade.CLI.Game;
 public sealed class GameLoop
 {
     private readonly JsonDataProvider _dataProvider;
+    private readonly ICoinTypeRepository _coinTypeRepository;
     private readonly ICoinRepository _coinRepository;
     private readonly IItemRepository _itemRepository;
     private readonly ICityRepository _cityRepository;
     private readonly IContractRepository _contractRepository;
     private readonly IPriceCalculator _priceCalculator;
+    private readonly ICoinValueService _coinValueService;
     private readonly TradeService _tradeService;
     private readonly TravelService _travelService;
     private readonly TimeService _timeService;
     private readonly ILocalizationService _localization;
+    private readonly ISaveService _saveService;
+    private readonly string _savePath = "save.trp";
 
     private Player _player = null!;
     private GameTime _gameTime = new();
@@ -30,29 +35,115 @@ public sealed class GameLoop
     public GameLoop()
     {
         _dataProvider = new JsonDataProvider();
-        _coinRepository = new InMemoryCoinRepository(_dataProvider);
+        _coinTypeRepository = new InMemoryCoinTypeRepository(_dataProvider);
+        _coinRepository = new InMemoryCoinRepository();
         _itemRepository = new InMemoryItemRepository(_dataProvider);
         _cityRepository = new InMemoryCityRepository(_dataProvider);
         _contractRepository = new InMemoryContractRepository(_dataProvider);
         _priceCalculator = new PriceCalculator(_itemRepository, _cityRepository);
+        var metalPrices = new SimpleMetalPriceProvider();
+        _coinValueService = new SimpleCoinValueService(_coinTypeRepository, metalPrices);
         _tradeService = new TradeService(_itemRepository, _cityRepository, _priceCalculator);
         _travelService = new TravelService(_cityRepository);
         _timeService = new TimeService();
         _localization = new SimpleLocalizationService();
-
-        _tradeService.SetCoinRepository(_coinRepository);
+        _saveService = new ZipSaveService();
     }
 
     public void Start()
     {
-        InitializePlayer();
+        var choice = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("[bold yellow]Spice Trade[/]")
+                .AddChoices("Новая игра", "Загрузить игру", "Выход"));
+
+        if (choice == "Выход") return;
+        
+        if (choice == "Загрузить игру")
+        {
+            if (!LoadGame())
+            {
+                AnsiConsole.MarkupLine("[red]Нет сохранений или ошибка загрузки![/]");
+                AnsiConsole.Prompt(new TextPrompt<string>("[Enter для продолжения...]").AllowEmpty());
+                Start();
+                return;
+            }
+        }
+        else
+        {
+            InitializePlayer();
+        }
+        
         Run();
+    }
+
+    private bool LoadGame()
+    {
+        var state = _saveService.Load<GameState>(_savePath);
+        if (state == null) return false;
+
+        _gameTime = new GameTime();
+        while (_gameTime.Year < state.Year || _gameTime.Month < state.Month || _gameTime.Day < state.Day)
+        {
+            _gameTime.Advance(1);
+        }
+
+        var wallet = new Wallet { Name = "Кошелёк", Capacity = 500 };
+        foreach (var coinState in state.Coins)
+        {
+            wallet.AddCoins(coinState.CoinTypeKey, coinState.Quantity, coinState.Year);
+        }
+
+        var inventory = new Inventory();
+        foreach (var (itemKey, qty) in state.Inventory)
+        {
+            inventory.Add(itemKey, qty);
+        }
+
+        _player = new Player
+        {
+            Name = state.PlayerName,
+            Wallet = wallet,
+            Inventory = inventory,
+            CurrentCityKey = state.CurrentCityKey
+        };
+
+        return true;
+    }
+
+    private void SaveGame()
+    {
+        var stacks = _player.Wallet.Stacks;
+        
+        var state = new GameState
+        {
+            PlayerName = _player.Name,
+            CurrentCityKey = _player.CurrentCityKey,
+            Day = _gameTime.Day,
+            Month = _gameTime.Month,
+            Year = _gameTime.Year,
+            Inventory = new Dictionary<string, int>(_player.Inventory.GetAll()),
+            Coins = stacks.Select(kv => new CoinState
+            {
+                CoinTypeKey = kv.Key,
+                Year = _gameTime.Year,
+                Condition = 100,
+                Quantity = kv.Value
+            }).ToList()
+        };
+
+        _saveService.Save(_savePath, state);
+        AnsiConsole.MarkupLine("[green]Игра сохранена![/]");
     }
 
     private void InitializePlayer()
     {
-        var wallet = new Wallet();
-        wallet.Add("coin_gold_ducat", 100);
+        var wallet = new Wallet { Name = "Кошелёк", Capacity = 500 };
+        for (int i = 0; i < 10; i++)
+        {
+            var coin = _coinRepository.Create("coin_gold_ducat", _gameTime.Year);
+            wallet.Add(coin);
+        }
 
         var inventory = new Inventory();
 
@@ -73,14 +164,15 @@ public sealed class GameLoop
             var seasonName = _localization.Get($"ui_season_{_gameTime.Season.ToString().ToLower()}");
             var city = _cityRepository.Get(_player.CurrentCityKey);
             var cityName = city != null ? _localization.Get(city.LocalizationKey) : "?";
-            var walletValue = _player.Wallet.GetTotalValue(k => _coinRepository.Get(k));
+            var region = city?.Region ?? "?";
+            var walletValue = _coinValueService.GetTotalValue(_player.Wallet.Coins, region);
 
             ShowMainMenu(cityName, seasonName, walletValue);
 
             var choice = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
                     .Title("[bold]Что делать?[/]")
-                    .AddChoices("Рынок", "Инвентарь", "Путешествие", "Контракты", "Ждать", "Выход"));
+                    .AddChoices("Рынок", "Инвентарь", "Кошелёк", "Путешествие", "Контракты", "Ждать", "Сохранить", "Выход"));
 
             if (choice == "Выход") break;
 
@@ -88,9 +180,11 @@ public sealed class GameLoop
             {
                 case "Рынок": ShowMarket(); break;
                 case "Инвентарь": ShowInventory(); break;
+                case "Кошелёк": ShowWallet(); break;
                 case "Путешествие": ShowTravel(); break;
                 case "Контракты": ShowContracts(); break;
                 case "Ждать": WaitDays(); break;
+                case "Сохранить": SaveGame(); break;
             }
 
             if (choice != "Выход")
@@ -147,8 +241,10 @@ public sealed class GameLoop
         {
             var price = _priceCalculator.Calculate(item.LocalizationKey, _player.CurrentCityKey, season);
             var total = price * quantity;
+            var city = _cityRepository.Get(_player.CurrentCityKey);
+            var region = city?.Region ?? "Италия";
 
-            if (_player.Wallet.TryTakeByValue(total, k => _coinRepository.Get(k)))
+            if (TryTakeFromWallet(total, region))
             {
                 _player.Inventory.Add(item.LocalizationKey, quantity);
                 AnsiConsole.MarkupLine($"[green]Куплено {quantity} x {_localization.Get(item.LocalizationKey)} за {total:F2}[/]");
@@ -164,12 +260,103 @@ public sealed class GameLoop
             {
                 var price = _priceCalculator.Calculate(item.LocalizationKey, _player.CurrentCityKey, season);
                 var total = price * quantity;
-                _player.Wallet.Add("coin_gold_ducat", (int)total);
+                AddToWallet(total, region: "Италия");
                 AnsiConsole.MarkupLine($"[green]Продано {quantity} x {_localization.Get(item.LocalizationKey)} за {total:F2}[/]");
             }
             else
             {
                 AnsiConsole.MarkupLine("[red]Недостаточно товара![/]");
+            }
+        }
+    }
+
+    private bool TryTakeFromWallet(decimal amount, string region)
+    {
+        var stacks = _player.Wallet.Stacks;
+        var totalValue = 0m;
+        
+        foreach (var (coinTypeKey, count) in stacks)
+        {
+            var sampleCoin = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+            totalValue += _coinValueService.GetNominalValue(sampleCoin, region) * count;
+        }
+
+        if (totalValue < amount) return false;
+
+        var sortedStacks = stacks.OrderByDescending(kv => 
+        {
+            var sample = new Coin { CoinTypeKey = kv.Key, Year = _gameTime.Year, Condition = 100 };
+            return _coinValueService.GetNominalValue(sample, region);
+        }).ToList();
+
+        var toTake = new Dictionary<string, int>();
+        var sum = 0m;
+        
+        foreach (var (coinTypeKey, count) in sortedStacks)
+        {
+            var sampleCoin = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+            var coinValue = _coinValueService.GetNominalValue(sampleCoin, region);
+            var needed = (int)Math.Ceiling((amount - sum) / coinValue);
+            var take = Math.Min(count, needed);
+            
+            if (take > 0)
+            {
+                toTake[coinTypeKey] = take;
+                sum += coinValue * take;
+            }
+            
+            if (sum >= amount) break;
+        }
+
+        if (sum < amount) return false;
+
+        foreach (var (coinTypeKey, count) in toTake)
+        {
+            _player.Wallet.TryTakeCoins(coinTypeKey, count);
+        }
+
+        var change = sum - amount;
+        if (change > 0.01m)
+        {
+            GiveChange(change, region);
+        }
+
+        return true;
+    }
+
+    private void GiveChange(decimal change, string region)
+    {
+        var coinTypes = _coinTypeRepository.GetAll()
+            .OrderBy(c => c.BaseDenomination)
+            .ToList();
+
+        foreach (var coinType in coinTypes)
+        {
+            while (change >= coinType.BaseDenomination * 0.9m && _player.Wallet.CanAdd())
+            {
+                var coin = _coinRepository.Create(coinType.Key, _gameTime.Year);
+                _player.Wallet.Add(coin);
+                change -= coinType.BaseDenomination;
+            }
+        }
+        
+        if (change > 0.01m)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Внимание: сдача {change:F2} не выдана (нет мелких монет)[/]");
+        }
+    }
+
+    private void AddToWallet(decimal amount, string region)
+    {
+        var coinTypes = _coinTypeRepository.GetAll().OrderByDescending(c => c.BaseDenomination).ToList();
+
+        foreach (var coinType in coinTypes)
+        {
+            while (amount >= coinType.BaseDenomination && _player.Wallet.CanAdd())
+            {
+                var coin = _coinRepository.Create(coinType.Key, _gameTime.Year);
+                _player.Wallet.Add(coin);
+                amount -= coinType.BaseDenomination;
             }
         }
     }
@@ -194,6 +381,163 @@ public sealed class GameLoop
         }
 
         AnsiConsole.Write(table);
+    }
+
+    private void ShowWallet()
+    {
+        var city = _cityRepository.Get(_player.CurrentCityKey);
+        var region = city?.Region ?? "?";
+
+        AnsiConsole.WriteLine("\n[bold]=== Кошелёк ===[/]");
+        
+        var stacks = _player.Wallet.Stacks;
+        var table = new Table().Expand();
+        table.AddColumn("Монета");
+        table.AddColumn("Кол-во");
+        table.AddColumn("Номинал");
+        table.AddColumn("Металл");
+
+        foreach (var (coinTypeKey, count) in stacks)
+        {
+            var coinType = _coinTypeRepository.Get(coinTypeKey);
+            var name = _localization.Get(coinType?.LocalizationKey ?? coinTypeKey);
+            var sampleCoin = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+            var totalNominal = _coinValueService.GetNominalValue(sampleCoin, region) * count;
+            var totalMetal = _coinValueService.GetMetalValue(sampleCoin) * count;
+            table.AddRow(name, count.ToString(), totalNominal.ToString("F2"), totalMetal.ToString("F2"));
+        }
+
+        AnsiConsole.Write(table);
+
+        var totalValue = 0m;
+        foreach (var (coinTypeKey, count) in _player.Wallet.Stacks)
+        {
+            var sample = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+            totalValue += _coinValueService.GetNominalValue(sample, region) * count;
+        }
+        AnsiConsole.MarkupLine($"\n[bold]Итого:[/] [green]{totalValue:F2}[/]");
+
+        var action = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("[bold]Операции?[/]")
+                .AddChoices("Размен", "Слияние", "Назад"));
+
+        if (action == "Размен")
+            ShowExchange();
+        else if (action == "Слияние")
+            ShowMerge();
+    }
+
+    private void ShowExchange()
+    {
+        AnsiConsole.WriteLine("\n[bold]=== Размен ===[/]");
+        
+        var coinTypes = _coinTypeRepository.GetAll();
+        var fromType = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("Какую монету разменять:")
+                .AddChoices(coinTypes.Select(c => _localization.Get(c.LocalizationKey)).ToList()));
+
+        var selectedType = coinTypes.First(c => _localization.Get(c.LocalizationKey) == fromType);
+        
+        var hasCoins = _player.Wallet.Stacks.ContainsKey(selectedType.Key);
+        if (!hasCoins)
+        {
+            AnsiConsole.MarkupLine("[red]У вас нет таких монет![/]");
+            return;
+        }
+
+        var targetTypes = coinTypes.Where(c => c.BaseDenomination < selectedType.BaseDenomination).ToList();
+        if (targetTypes.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Нет монет для размена (нет мельче)[/]");
+            return;
+        }
+
+        var toType = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("На какую монету:")
+                .AddChoices(targetTypes.Select(c => _localization.Get(c.LocalizationKey)).ToList()));
+
+        var targetCoinType = targetTypes.First(c => _localization.Get(c.LocalizationKey) == toType);
+        
+        var ratio = (int)(selectedType.BaseDenomination / targetCoinType.BaseDenomination);
+        var amountStr = AnsiConsole.Ask<string>($"Сколько {fromType} разменять (1 = {ratio} {toType}):");
+        
+        if (!int.TryParse(amountStr, out var amount) || amount <= 0) return;
+
+        var availableCount = _player.Wallet.Stacks.GetValueOrDefault(selectedType.Key, 0);
+        if (availableCount < amount)
+        {
+            AnsiConsole.MarkupLine("[red]Недостаточно монет![/]");
+            return;
+        }
+
+        _player.Wallet.TryTakeCoins(selectedType.Key, amount);
+        
+        var exchanged = 0;
+        for (int i = 0; i < amount * ratio; i++)
+        {
+            if (_player.Wallet.CanAdd(1))
+            {
+                _player.Wallet.AddCoins(targetCoinType.Key, 1, _gameTime.Year);
+                exchanged++;
+            }
+        }
+
+        var expected = amount * ratio;
+        if (exchanged < expected)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Внимание: кошелёк переполнен! Обменяно {exchanged}/{expected} монет[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine($"[green]Разменено {amount} {fromType} на {exchanged} {toType}[/]");
+        }
+    }
+
+    private void ShowMerge()
+    {
+        AnsiConsole.WriteLine("\n[bold]=== Слияние ===[/]");
+
+        var grouped = _player.Wallet.Coins
+            .GroupBy(c => c.CoinTypeKey)
+            .Where(g => g.Count() > 1)
+            .ToList();
+
+        if (grouped.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Нечего объединять (нет повторяющихся монет)[/]");
+            return;
+        }
+
+        var coinTypes = _coinTypeRepository.GetAll();
+        
+        foreach (var group in grouped)
+        {
+            var coinType = coinTypes.FirstOrDefault(c => c.Key == group.Key);
+            var name = _localization.Get(coinType?.LocalizationKey ?? group.Key);
+            AnsiConsole.MarkupLine($"[green]{name}[/]: {group.Count()} шт.");
+        }
+
+        var toMerge = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("Какие монеты объединить:")
+                .AddChoices(grouped.Select(g => {
+                    var ct = coinTypes.FirstOrDefault(c => c.Key == g.Key);
+                    return _localization.Get(ct?.LocalizationKey ?? g.Key);
+                }).ToList()));
+
+        var selectedGroup = grouped.First(g => {
+            var ct = coinTypes.FirstOrDefault(c => c.Key == g.Key);
+            return _localization.Get(ct?.LocalizationKey ?? g.Key) == toMerge;
+        });
+
+        var mergeCountStr = AnsiConsole.Ask<string>("Сколько монет объединить в стопку:");
+        if (!int.TryParse(mergeCountStr, out var mergeCount) || mergeCount < 2) return;
+        if (mergeCount > selectedGroup.Count()) mergeCount = selectedGroup.Count();
+
+        AnsiConsole.MarkupLine($"[green]Объединено {mergeCount} монет в стопку[/]");
     }
 
     private void ShowTravel()
@@ -230,9 +574,9 @@ public sealed class GameLoop
     private void ShowContracts()
     {
         var contracts = _contractRepository.GetByCity(_player.CurrentCityKey);
-        
+
         AnsiConsole.WriteLine("\n[bold]=== Контракты ===[/]");
-        
+
         if (contracts.Count == 0)
         {
             AnsiConsole.WriteLine("Контрактов нет.");

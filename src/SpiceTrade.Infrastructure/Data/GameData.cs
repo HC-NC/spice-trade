@@ -31,8 +31,8 @@ public sealed class CoinData
     [JsonPropertyName("denomination")]
     public decimal Denomination { get; set; }
 
-    [JsonPropertyName("metalContent")]
-    public decimal MetalContent { get; set; }
+    [JsonPropertyName("metalComposition")]
+    public Dictionary<string, decimal> MetalComposition { get; set; } = new();
 }
 
 public sealed class ItemData

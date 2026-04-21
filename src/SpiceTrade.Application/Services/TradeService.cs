@@ -34,15 +34,6 @@ public sealed class TradeService
         var price = _priceCalculator.Calculate(itemKey, player.CurrentCityKey, season);
         var totalCost = price * quantity;
 
-        var walletValue = player.Wallet.GetTotalValue(key => _coinRepository?.Get(key) ?? null);
-
-        if (walletValue < totalCost)
-            return new TradeResult
-            {
-                Success = false,
-                Message = $"Недостаточно средств. Требуется: {totalCost}, В наличии: {walletValue}"
-            };
-
         player.Inventory.Add(itemKey, quantity);
         
         return new TradeResult
@@ -77,7 +68,4 @@ public sealed class TradeService
             QuantityTraded = quantity
         };
     }
-
-    private ICoinRepository? _coinRepository;
-    public void SetCoinRepository(ICoinRepository coinRepository) => _coinRepository = coinRepository;
 }
