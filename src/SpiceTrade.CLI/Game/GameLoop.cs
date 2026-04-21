@@ -1,5 +1,6 @@
 using Spectre.Console;
 using SpiceTrade.Application.Services;
+using SpiceTrade.Core;
 using SpiceTrade.Core.Entities;
 using SpiceTrade.Core.Enums;
 using SpiceTrade.Core.Interfaces;
@@ -25,6 +26,8 @@ public sealed class GameLoop
     private readonly TravelService _travelService;
     private readonly TimeService _timeService;
     private readonly ILocalizationService _localization;
+    private readonly ISaveService _saveService;
+    private readonly string _savePath = "save.trp";
 
     private Player _player = null!;
     private GameTime _gameTime = new();
@@ -44,12 +47,93 @@ public sealed class GameLoop
         _travelService = new TravelService(_cityRepository);
         _timeService = new TimeService();
         _localization = new SimpleLocalizationService();
+        _saveService = new ZipSaveService();
     }
 
     public void Start()
     {
-        InitializePlayer();
+        var choice = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("[bold yellow]Spice Trade[/]")
+                .AddChoices("Новая игра", "Загрузить игру", "Выход"));
+
+        if (choice == "Выход") return;
+        
+        if (choice == "Загрузить игру")
+        {
+            if (!LoadGame())
+            {
+                AnsiConsole.MarkupLine("[red]Нет сохранений или ошибка загрузки![/]");
+                AnsiConsole.Prompt(new TextPrompt<string>("[Enter для продолжения...]").AllowEmpty());
+                Start();
+                return;
+            }
+        }
+        else
+        {
+            InitializePlayer();
+        }
+        
         Run();
+    }
+
+    private bool LoadGame()
+    {
+        var state = _saveService.Load<GameState>(_savePath);
+        if (state == null) return false;
+
+        _gameTime = new GameTime();
+        while (_gameTime.Year < state.Year || _gameTime.Month < state.Month || _gameTime.Day < state.Day)
+        {
+            _gameTime.Advance(1);
+        }
+
+        var wallet = new Wallet { Name = "Кошелёк", Capacity = 500 };
+        foreach (var coinState in state.Coins)
+        {
+            var coin = _coinRepository.Create(coinState.CoinTypeKey, coinState.Year);
+            coin.Properties = coinState.Properties;
+            wallet.Add(coin);
+        }
+
+        var inventory = new Inventory();
+        foreach (var (itemKey, qty) in state.Inventory)
+        {
+            inventory.Add(itemKey, qty);
+        }
+
+        _player = new Player
+        {
+            Name = state.PlayerName,
+            Wallet = wallet,
+            Inventory = inventory,
+            CurrentCityKey = state.CurrentCityKey
+        };
+
+        return true;
+    }
+
+    private void SaveGame()
+    {
+        var state = new GameState
+        {
+            PlayerName = _player.Name,
+            CurrentCityKey = _player.CurrentCityKey,
+            Day = _gameTime.Day,
+            Month = _gameTime.Month,
+            Year = _gameTime.Year,
+            Inventory = new Dictionary<string, int>(_player.Inventory.GetAll()),
+            Coins = _player.Wallet.Coins.Select(c => new CoinState
+            {
+                CoinTypeKey = c.CoinTypeKey,
+                Year = c.Year,
+                Condition = c.Condition,
+                Properties = c.Properties
+            }).ToList()
+        };
+
+        _saveService.Save(_savePath, state);
+        AnsiConsole.MarkupLine("[green]Игра сохранена![/]");
     }
 
     private void InitializePlayer()
@@ -88,7 +172,7 @@ public sealed class GameLoop
             var choice = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
                     .Title("[bold]Что делать?[/]")
-                    .AddChoices("Рынок", "Инвентарь", "Кошелёк", "Путешествие", "Контракты", "Ждать", "Выход"));
+                    .AddChoices("Рынок", "Инвентарь", "Кошелёк", "Путешествие", "Контракты", "Ждать", "Сохранить", "Выход"));
 
             if (choice == "Выход") break;
 
@@ -100,6 +184,7 @@ public sealed class GameLoop
                 case "Путешествие": ShowTravel(); break;
                 case "Контракты": ShowContracts(); break;
                 case "Ждать": WaitDays(); break;
+                case "Сохранить": SaveGame(); break;
             }
 
             if (choice != "Выход")

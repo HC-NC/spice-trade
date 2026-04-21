@@ -6,7 +6,7 @@ public sealed class Coin
     public required string CoinTypeKey { get; init; }
     public required int Year { get; init; }
     public required int Condition { get; init; }
-    public Dictionary<string, object> Properties { get; init; } = new();
+    public Dictionary<string, object> Properties { get; set; } = new();
 
     public decimal GetMetalValue(IMetalPriceProvider metalPrices)
     {
