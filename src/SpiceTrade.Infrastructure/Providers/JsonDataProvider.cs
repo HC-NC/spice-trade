@@ -36,8 +36,9 @@ public sealed class JsonDataProvider
         {
             Coins = new List<CoinData>
             {
-                new() { Key = "coin_gold_ducat", LocalizationKey = "coin_gold_ducat", Mint = "Венеция", Denomination = 1, MetalContent = 1.0m },
-                new() { Key = "coin_silver_groshen", LocalizationKey = "coin_silver_groshen", Mint = "Генуя", Denomination = 1, MetalContent = 0.5m }
+                new() { Key = "coin_gold_ducat", LocalizationKey = "coin_gold_ducat", Mint = "Венеция", Denomination = 100.0m, MetalComposition = new() { ["Gold"] = 1.0m } },
+                new() { Key = "coin_silver_groshen", LocalizationKey = "coin_silver_groshen", Mint = "Генуя", Denomination = 10.0m, MetalComposition = new() { ["Silver"] = 1.0m } },
+                new() { Key = "coin_copper_denari", LocalizationKey = "coin_copper_denari", Mint = "Рим", Denomination = 1.0m, MetalComposition = new() { ["Copper"] = 1.0m } }
             },
             Items = new List<ItemData>
             {

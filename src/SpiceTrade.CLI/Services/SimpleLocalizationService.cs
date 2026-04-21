@@ -9,6 +9,7 @@ public sealed class SimpleLocalizationService : ILocalizationService
         // Coins
         ["coin_gold_ducat"] = "Золотой дукат",
         ["coin_silver_groshen"] = "Серебряный грош",
+        ["coin_copper_denari"] = "Медный денарий",
         
         // Items
         ["item_wheat"] = "Пшеница",
