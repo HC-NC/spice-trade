@@ -1,10 +1,16 @@
-﻿namespace SpiceTrade.CLI
+using Spectre.Console;
+using SpiceTrade.CLI.Game;
+
+namespace SpiceTrade.CLI;
+
+class Program
 {
-    internal class Program
+    private static void Main(string[] args)
     {
-        static void Main(string[] args)
-        {
-            Console.WriteLine("Hello, World!");
-        }
+        AnsiConsole.MarkupLine("[bold yellow]Spice Trade[/]");
+        AnsiConsole.WriteLine();
+
+        var game = new GameLoop();
+        game.Start();
     }
 }
