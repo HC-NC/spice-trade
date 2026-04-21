@@ -1,1 +1,6 @@
-<Solution />
+<Solution>
+  <Project Path="src/SpiceTrade.Application/SpiceTrade.Application.csproj" Id="c97698cd-1b28-4e5b-b4e6-6a10403d70d8" />
+  <Project Path="src/SpiceTrade.CLI/SpiceTrade.CLI.csproj" Id="1264c048-01f9-49f0-9fa7-37755b0113e1" />
+  <Project Path="src/SpiceTrade.Core/SpiceTrade.Core.csproj" Id="6dc66c68-2645-4773-96b8-871e7d4f21e7" />
+  <Project Path="src/SpiceTrade.Infrastructure/SpiceTrade.Infrastructure.csproj" Id="a89ffe99-239f-4e15-9645-5863d959cc8e" />
+</Solution>

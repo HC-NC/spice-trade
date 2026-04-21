@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <Authors>HC_NC</Authors>
+    <Company>HC_NC Dev</Company>
+    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
+    <MinVerTagPrefix>v</MinVerTagPrefix>
+  </PropertyGroup>
+</Project>
