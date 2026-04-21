@@ -20,5 +20,5 @@ public sealed class CoinState
     public required string CoinTypeKey { get; set; }
     public required int Year { get; set; }
     public required int Condition { get; set; }
-    public Dictionary<string, object> Properties { get; set; } = new();
+    public int Quantity { get; set; } = 1;
 }

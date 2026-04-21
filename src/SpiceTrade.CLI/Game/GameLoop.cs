@@ -91,9 +91,7 @@ public sealed class GameLoop
         var wallet = new Wallet { Name = "Кошелёк", Capacity = 500 };
         foreach (var coinState in state.Coins)
         {
-            var coin = _coinRepository.Create(coinState.CoinTypeKey, coinState.Year);
-            coin.Properties = coinState.Properties;
-            wallet.Add(coin);
+            wallet.AddCoins(coinState.CoinTypeKey, coinState.Quantity, coinState.Year);
         }
 
         var inventory = new Inventory();
@@ -115,6 +113,8 @@ public sealed class GameLoop
 
     private void SaveGame()
     {
+        var stacks = _player.Wallet.Stacks;
+        
         var state = new GameState
         {
             PlayerName = _player.Name,
@@ -123,12 +123,12 @@ public sealed class GameLoop
             Month = _gameTime.Month,
             Year = _gameTime.Year,
             Inventory = new Dictionary<string, int>(_player.Inventory.GetAll()),
-            Coins = _player.Wallet.Coins.Select(c => new CoinState
+            Coins = stacks.Select(kv => new CoinState
             {
-                CoinTypeKey = c.CoinTypeKey,
-                Year = c.Year,
-                Condition = c.Condition,
-                Properties = c.Properties
+                CoinTypeKey = kv.Key,
+                Year = _gameTime.Year,
+                Condition = 100,
+                Quantity = kv.Value
             }).ToList()
         };
 
@@ -272,34 +272,47 @@ public sealed class GameLoop
 
     private bool TryTakeFromWallet(decimal amount, string region)
     {
-        var availableCoins = _player.Wallet.Coins.ToList();
-        var totalValue = _coinValueService.GetTotalValue(availableCoins, region);
+        var stacks = _player.Wallet.Stacks;
+        var totalValue = 0m;
+        
+        foreach (var (coinTypeKey, count) in stacks)
+        {
+            var sampleCoin = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+            totalValue += _coinValueService.GetNominalValue(sampleCoin, region) * count;
+        }
 
         if (totalValue < amount) return false;
 
-        var sortedCoins = availableCoins
-            .OrderByDescending(c => _coinValueService.GetNominalValue(c, region))
-            .ToList();
+        var sortedStacks = stacks.OrderByDescending(kv => 
+        {
+            var sample = new Coin { CoinTypeKey = kv.Key, Year = _gameTime.Year, Condition = 100 };
+            return _coinValueService.GetNominalValue(sample, region);
+        }).ToList();
 
-        var toTake = new List<Coin>();
+        var toTake = new Dictionary<string, int>();
         var sum = 0m;
         
-        foreach (var coin in sortedCoins)
+        foreach (var (coinTypeKey, count) in sortedStacks)
         {
-            var coinValue = _coinValueService.GetNominalValue(coin, region);
-            if (sum + coinValue <= amount * 1.5m)
+            var sampleCoin = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+            var coinValue = _coinValueService.GetNominalValue(sampleCoin, region);
+            var needed = (int)Math.Ceiling((amount - sum) / coinValue);
+            var take = Math.Min(count, needed);
+            
+            if (take > 0)
             {
-                toTake.Add(coin);
-                sum += coinValue;
-                if (sum >= amount) break;
+                toTake[coinTypeKey] = take;
+                sum += coinValue * take;
             }
+            
+            if (sum >= amount) break;
         }
 
         if (sum < amount) return false;
 
-        foreach (var coin in toTake)
+        foreach (var (coinTypeKey, count) in toTake)
         {
-            _player.Wallet.TryTake(c => c.Id == coin.Id, out _);
+            _player.Wallet.TryTakeCoins(coinTypeKey, count);
         }
 
         var change = sum - amount;
@@ -377,32 +390,31 @@ public sealed class GameLoop
 
         AnsiConsole.WriteLine("\n[bold]=== Кошелёк ===[/]");
         
-        var grouped = _player.Wallet.Coins
-            .GroupBy(c => c.CoinTypeKey)
-            .Select(g => new {
-                CoinTypeKey = g.Key,
-                Count = g.Count(),
-                TotalNominal = g.Sum(c => _coinValueService.GetNominalValue(c, region)),
-                TotalMetal = g.Sum(c => _coinValueService.GetMetalValue(c))
-            })
-            .ToList();
-
+        var stacks = _player.Wallet.Stacks;
         var table = new Table().Expand();
         table.AddColumn("Монета");
         table.AddColumn("Кол-во");
         table.AddColumn("Номинал");
         table.AddColumn("Металл");
 
-        foreach (var group in grouped)
+        foreach (var (coinTypeKey, count) in stacks)
         {
-            var coinType = _coinTypeRepository.Get(group.CoinTypeKey);
-            var name = _localization.Get(coinType?.LocalizationKey ?? group.CoinTypeKey);
-            table.AddRow(name, group.Count.ToString(), group.TotalNominal.ToString("F2"), group.TotalMetal.ToString("F2"));
+            var coinType = _coinTypeRepository.Get(coinTypeKey);
+            var name = _localization.Get(coinType?.LocalizationKey ?? coinTypeKey);
+            var sampleCoin = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+            var totalNominal = _coinValueService.GetNominalValue(sampleCoin, region) * count;
+            var totalMetal = _coinValueService.GetMetalValue(sampleCoin) * count;
+            table.AddRow(name, count.ToString(), totalNominal.ToString("F2"), totalMetal.ToString("F2"));
         }
 
         AnsiConsole.Write(table);
 
-        var totalValue = _coinValueService.GetTotalValue(_player.Wallet.Coins, region);
+        var totalValue = 0m;
+        foreach (var (coinTypeKey, count) in _player.Wallet.Stacks)
+        {
+            var sample = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+            totalValue += _coinValueService.GetNominalValue(sample, region) * count;
+        }
         AnsiConsole.MarkupLine($"\n[bold]Итого:[/] [green]{totalValue:F2}[/]");
 
         var action = AnsiConsole.Prompt(
@@ -428,7 +440,7 @@ public sealed class GameLoop
 
         var selectedType = coinTypes.First(c => _localization.Get(c.LocalizationKey) == fromType);
         
-        var hasCoins = _player.Wallet.Coins.Any(c => c.CoinTypeKey == selectedType.Key);
+        var hasCoins = _player.Wallet.Stacks.ContainsKey(selectedType.Key);
         if (!hasCoins)
         {
             AnsiConsole.MarkupLine("[red]У вас нет таких монет![/]");
@@ -454,26 +466,22 @@ public sealed class GameLoop
         
         if (!int.TryParse(amountStr, out var amount) || amount <= 0) return;
 
-        var coinsToExchange = _player.Wallet.Coins.Where(c => c.CoinTypeKey == selectedType.Key).Take(amount).ToList();
-        
-        if (coinsToExchange.Count < amount)
+        var availableCount = _player.Wallet.Stacks.GetValueOrDefault(selectedType.Key, 0);
+        if (availableCount < amount)
         {
             AnsiConsole.MarkupLine("[red]Недостаточно монет![/]");
             return;
         }
 
+        _player.Wallet.TryTakeCoins(selectedType.Key, amount);
+        
         var exchanged = 0;
-        foreach (var coin in coinsToExchange)
+        for (int i = 0; i < amount * ratio; i++)
         {
-            _player.Wallet.TryTake(c => c.Id == coin.Id, out _);
-            for (int i = 0; i < ratio; i++)
+            if (_player.Wallet.CanAdd(1))
             {
-                if (_player.Wallet.CanAdd())
-                {
-                    var newCoin = _coinRepository.Create(targetCoinType.Key, _gameTime.Year);
-                    _player.Wallet.Add(newCoin);
-                    exchanged++;
-                }
+                _player.Wallet.AddCoins(targetCoinType.Key, 1, _gameTime.Year);
+                exchanged++;
             }
         }
 
