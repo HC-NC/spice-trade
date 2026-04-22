@@ -172,13 +172,26 @@ public sealed class GameLoop
     public void Run()
     {
         var layout = LayoutFactory.CreateRoot();
-        IScreen? currentScreen = new MainMenuScreen();
+        var menu = new MainMenuScreen();
+        IScreen? currentScreen = menu;
+
+        menu.OnLoadGameRequested += () =>
+        {
+            if (!LoadGame())
+            {
+                AnsiConsole.MarkupLine("[red]Нет сохранений или ошибка загрузки![/]");
+                AnsiConsole.Prompt(new TextPrompt<string>("Enter для продолжения...").AllowEmpty());
+                return menu;
+            }
+            else
+                return new MainScreen(_player, _cityRepository.Get(_player.CurrentCityKey));
+        };
 
         int lastWidth = AnsiConsole.Console.Profile.Width;
         int lastHeight = AnsiConsole.Console.Profile.Height;
 
         layout["Header"].Update(new Panel("").Border(BoxBorder.None));
-        layout["Footer"].Update(new Panel("").Border(BoxBorder.None));
+        layout["Footer"].Update(new Panel(Align.Right(new Text('\n' + _version))).Border(BoxBorder.None));
 
 
         AnsiConsole.Live(layout).Start(ctx =>
@@ -192,7 +205,6 @@ public sealed class GameLoop
                     lastHeight = AnsiConsole.Console.Profile.Height;
 
                     Console.Clear();
-                    ctx.Refresh();
                 }
 
                 layout["Main"].Update(currentScreen.GetContent());

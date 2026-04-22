@@ -12,6 +12,8 @@ public class MainMenuScreen : IScreen
 
     private FigletFont _smallFont;
 
+    public event Func<IScreen>? OnLoadGameRequested;
+
     public MainMenuScreen()
     {
         using (var ms = new MemoryStream(Resources.FigletFont_Small))
@@ -22,7 +24,12 @@ public class MainMenuScreen : IScreen
 
     public IRenderable GetContent()
     {
-        IRenderable logo = new FigletText(_smallFont, "SPICE TRADE").Centered().Color(Color.Gold1);
+        IRenderable logo;
+
+        if (AnsiConsole.Console.Profile.Width < 84)
+            logo = new FigletText(_smallFont, "SPICE TRADE").Centered().Color(Color.Gold1);
+        else
+            logo = new FigletText("SPICE TRADE").Centered().Color(Color.Gold1);
 
         var menuTable = new Table().NoBorder().HideHeaders().AddColumn("Option");
 
@@ -60,6 +67,10 @@ public class MainMenuScreen : IScreen
 
     private IScreen? ExecuteSelection()
     {
+        if (_selectedIndex == 0)
+        {
+            return OnLoadGameRequested?.Invoke();
+        }
         if (_selectedIndex == 3) return null;
         return this;
     }
