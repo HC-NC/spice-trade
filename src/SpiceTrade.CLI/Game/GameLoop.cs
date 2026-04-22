@@ -1,5 +1,6 @@
 using Spectre.Console;
 using SpiceTrade.Application.Services;
+using SpiceTrade.Application.UseCases;
 using SpiceTrade.Core;
 using SpiceTrade.Core.Entities;
 using SpiceTrade.Core.Enums;
@@ -22,12 +23,14 @@ public sealed class GameLoop
     private readonly IContractRepository _contractRepository;
     private readonly IPriceCalculator _priceCalculator;
     private readonly ICoinValueService _coinValueService;
-    private readonly TradeService _tradeService;
-    private readonly TravelService _travelService;
-    private readonly TimeService _timeService;
     private readonly ILocalizationService _localization;
     private readonly ISaveService _saveService;
     private readonly string _savePath = "save.trp";
+
+    private readonly BuyItemUseCase _buyItemUseCase;
+    private readonly SellItemUseCase _sellItemUseCase;
+    private readonly TravelUseCase _travelUseCase;
+    private readonly WaitTimeUseCase _waitTimeUseCase;
 
     private Player _player = null!;
     private GameTime _gameTime = new();
@@ -43,11 +46,13 @@ public sealed class GameLoop
         _priceCalculator = new PriceCalculator(_itemRepository, _cityRepository);
         var metalPrices = new SimpleMetalPriceProvider();
         _coinValueService = new SimpleCoinValueService(_coinTypeRepository, metalPrices);
-        _tradeService = new TradeService(_itemRepository, _cityRepository, _priceCalculator);
-        _travelService = new TravelService(_cityRepository);
-        _timeService = new TimeService();
         _localization = new SimpleLocalizationService();
         _saveService = new ZipSaveService();
+
+        _buyItemUseCase = new BuyItemUseCase(_itemRepository, _cityRepository, _priceCalculator);
+        _sellItemUseCase = new SellItemUseCase(_itemRepository, _cityRepository, _priceCalculator);
+        _travelUseCase = new TravelUseCase(_cityRepository);
+        _waitTimeUseCase = new WaitTimeUseCase();
     }
 
     public void Start()
@@ -64,7 +69,7 @@ public sealed class GameLoop
             if (!LoadGame())
             {
                 AnsiConsole.MarkupLine("[red]Нет сохранений или ошибка загрузки![/]");
-                AnsiConsole.Prompt(new TextPrompt<string>("[Enter для продолжения...]").AllowEmpty());
+                AnsiConsole.Prompt(new TextPrompt<string>("Enter для продолжения...").AllowEmpty());
                 Start();
                 return;
             }
@@ -88,7 +93,7 @@ public sealed class GameLoop
             _gameTime.Advance(1);
         }
 
-        var wallet = new Wallet { Name = "Кошелёк", Capacity = 500 };
+        var wallet = new Wallet { Name = "Кошелё��", Capacity = 500 };
         foreach (var coinState in state.Coins)
         {
             wallet.AddCoins(coinState.CoinTypeKey, coinState.Quantity, coinState.Year);
@@ -139,11 +144,7 @@ public sealed class GameLoop
     private void InitializePlayer()
     {
         var wallet = new Wallet { Name = "Кошелёк", Capacity = 500 };
-        for (int i = 0; i < 10; i++)
-        {
-            var coin = _coinRepository.Create("coin_gold_ducat", _gameTime.Year);
-            wallet.Add(coin);
-        }
+        wallet.AddCoins("coin_gold_ducat", 10, _gameTime.Year);
 
         var inventory = new Inventory();
 
@@ -165,7 +166,12 @@ public sealed class GameLoop
             var city = _cityRepository.Get(_player.CurrentCityKey);
             var cityName = city != null ? _localization.Get(city.LocalizationKey) : "?";
             var region = city?.Region ?? "?";
-            var walletValue = _coinValueService.GetTotalValue(_player.Wallet.Coins, region);
+            var walletValue = 0m;
+            foreach (var (coinTypeKey, count) in _player.Wallet.Stacks)
+            {
+                var sample = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+                walletValue += _coinValueService.GetNominalValue(sample, region) * count;
+            }
 
             ShowMainMenu(cityName, seasonName, walletValue);
 
@@ -205,9 +211,9 @@ public sealed class GameLoop
     private void ShowMarket()
     {
         var items = _itemRepository.GetAll();
-        var season = _gameTime.Season;
+        var season = _gameTime.Season.ToString();
 
-        AnsiConsole.WriteLine("\n[bold]=== Рынок ===[/]");
+        AnsiConsole.MarkupLine("\n[bold]=== Рынок ===[/]");
         var table = new Table().Expand();
         table.AddColumn("Товар");
         table.AddColumn("Цена");
@@ -215,7 +221,7 @@ public sealed class GameLoop
 
         foreach (var itm in items)
         {
-            var price = _priceCalculator.Calculate(itm.LocalizationKey, _player.CurrentCityKey, season);
+            var price = _priceCalculator.Calculate(itm.LocalizationKey, _player.CurrentCityKey, _gameTime.Season);
             table.AddRow(_localization.Get(itm.LocalizationKey), price.ToString("F2"), itm.Category.ToString());
         }
 
@@ -239,28 +245,41 @@ public sealed class GameLoop
 
         if (action == "Купить")
         {
-            var price = _priceCalculator.Calculate(item.LocalizationKey, _player.CurrentCityKey, season);
-            var total = price * quantity;
-            var city = _cityRepository.Get(_player.CurrentCityKey);
-            var region = city?.Region ?? "Италия";
-
-            if (TryTakeFromWallet(total, region))
+            var result = _buyItemUseCase.Execute(new BuyItemInput
             {
-                _player.Inventory.Add(item.LocalizationKey, quantity);
-                AnsiConsole.MarkupLine($"[green]Куплено {quantity} x {_localization.Get(item.LocalizationKey)} за {total:F2}[/]");
+                PlayerId = _player.Name,
+                ItemKey = item.LocalizationKey,
+                Quantity = quantity,
+                CityKey = _player.CurrentCityKey,
+                Season = season
+            });
+
+            if (result.Success)
+            {
+                var price = _priceCalculator.Calculate(item.LocalizationKey, _player.CurrentCityKey, _gameTime.Season);
+                var total = price * quantity;
+                if (TryTakeFromWallet(total))
+                {
+                    _player.Inventory.Add(item.LocalizationKey, quantity);
+                    AnsiConsole.MarkupLine(result.Message);
+                }
+                else
+                {
+                    AnsiConsole.MarkupLine("[red]Недостаточно средств![/]");
+                }
             }
             else
             {
-                AnsiConsole.MarkupLine("[red]Недостаточно средств![/]");
+                AnsiConsole.MarkupLine($"[red]{result.Message}[/]");
             }
         }
         else
         {
             if (_player.Inventory.TryTake(item.LocalizationKey, quantity))
             {
-                var price = _priceCalculator.Calculate(item.LocalizationKey, _player.CurrentCityKey, season);
+                var price = _priceCalculator.Calculate(item.LocalizationKey, _player.CurrentCityKey, _gameTime.Season);
                 var total = price * quantity;
-                AddToWallet(total, region: "Италия");
+                AddToWallet(total);
                 AnsiConsole.MarkupLine($"[green]Продано {quantity} x {_localization.Get(item.LocalizationKey)} за {total:F2}[/]");
             }
             else
@@ -270,7 +289,7 @@ public sealed class GameLoop
         }
     }
 
-    private bool TryTakeFromWallet(decimal amount, string region)
+    private bool TryTakeFromWallet(decimal amount)
     {
         var stacks = _player.Wallet.Stacks;
         var totalValue = 0m;
@@ -278,7 +297,7 @@ public sealed class GameLoop
         foreach (var (coinTypeKey, count) in stacks)
         {
             var sampleCoin = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
-            totalValue += _coinValueService.GetNominalValue(sampleCoin, region) * count;
+            totalValue += _coinValueService.GetNominalValue(sampleCoin, "Италия") * count;
         }
 
         if (totalValue < amount) return false;
@@ -286,7 +305,7 @@ public sealed class GameLoop
         var sortedStacks = stacks.OrderByDescending(kv => 
         {
             var sample = new Coin { CoinTypeKey = kv.Key, Year = _gameTime.Year, Condition = 100 };
-            return _coinValueService.GetNominalValue(sample, region);
+            return _coinValueService.GetNominalValue(sample, "Италия");
         }).ToList();
 
         var toTake = new Dictionary<string, int>();
@@ -295,7 +314,7 @@ public sealed class GameLoop
         foreach (var (coinTypeKey, count) in sortedStacks)
         {
             var sampleCoin = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
-            var coinValue = _coinValueService.GetNominalValue(sampleCoin, region);
+            var coinValue = _coinValueService.GetNominalValue(sampleCoin, "Италия");
             var needed = (int)Math.Ceiling((amount - sum) / coinValue);
             var take = Math.Min(count, needed);
             
@@ -318,13 +337,13 @@ public sealed class GameLoop
         var change = sum - amount;
         if (change > 0.01m)
         {
-            GiveChange(change, region);
+            GiveChange(change);
         }
 
         return true;
     }
 
-    private void GiveChange(decimal change, string region)
+    private void GiveChange(decimal change)
     {
         var coinTypes = _coinTypeRepository.GetAll()
             .OrderBy(c => c.BaseDenomination)
@@ -332,10 +351,9 @@ public sealed class GameLoop
 
         foreach (var coinType in coinTypes)
         {
-            while (change >= coinType.BaseDenomination * 0.9m && _player.Wallet.CanAdd())
+            while (change >= coinType.BaseDenomination * 0.9m && _player.Wallet.CanAdd(1))
             {
-                var coin = _coinRepository.Create(coinType.Key, _gameTime.Year);
-                _player.Wallet.Add(coin);
+                _player.Wallet.AddCoins(coinType.Key, 1, _gameTime.Year);
                 change -= coinType.BaseDenomination;
             }
         }
@@ -346,16 +364,15 @@ public sealed class GameLoop
         }
     }
 
-    private void AddToWallet(decimal amount, string region)
+    private void AddToWallet(decimal amount)
     {
         var coinTypes = _coinTypeRepository.GetAll().OrderByDescending(c => c.BaseDenomination).ToList();
 
         foreach (var coinType in coinTypes)
         {
-            while (amount >= coinType.BaseDenomination && _player.Wallet.CanAdd())
+            while (amount >= coinType.BaseDenomination && _player.Wallet.CanAdd(1))
             {
-                var coin = _coinRepository.Create(coinType.Key, _gameTime.Year);
-                _player.Wallet.Add(coin);
+                _player.Wallet.AddCoins(coinType.Key, 1, _gameTime.Year);
                 amount -= coinType.BaseDenomination;
             }
         }
@@ -420,12 +437,10 @@ public sealed class GameLoop
         var action = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
                 .Title("[bold]Операции?[/]")
-                .AddChoices("Размен", "Слияние", "Назад"));
+                .AddChoices("Размен", "Назад"));
 
         if (action == "Размен")
             ShowExchange();
-        else if (action == "Слияние")
-            ShowMerge();
     }
 
     private void ShowExchange()
@@ -496,50 +511,6 @@ public sealed class GameLoop
         }
     }
 
-    private void ShowMerge()
-    {
-        AnsiConsole.WriteLine("\n[bold]=== Слияние ===[/]");
-
-        var grouped = _player.Wallet.Coins
-            .GroupBy(c => c.CoinTypeKey)
-            .Where(g => g.Count() > 1)
-            .ToList();
-
-        if (grouped.Count == 0)
-        {
-            AnsiConsole.MarkupLine("[yellow]Нечего объединять (нет повторяющихся монет)[/]");
-            return;
-        }
-
-        var coinTypes = _coinTypeRepository.GetAll();
-        
-        foreach (var group in grouped)
-        {
-            var coinType = coinTypes.FirstOrDefault(c => c.Key == group.Key);
-            var name = _localization.Get(coinType?.LocalizationKey ?? group.Key);
-            AnsiConsole.MarkupLine($"[green]{name}[/]: {group.Count()} шт.");
-        }
-
-        var toMerge = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("Какие монеты объединить:")
-                .AddChoices(grouped.Select(g => {
-                    var ct = coinTypes.FirstOrDefault(c => c.Key == g.Key);
-                    return _localization.Get(ct?.LocalizationKey ?? g.Key);
-                }).ToList()));
-
-        var selectedGroup = grouped.First(g => {
-            var ct = coinTypes.FirstOrDefault(c => c.Key == g.Key);
-            return _localization.Get(ct?.LocalizationKey ?? g.Key) == toMerge;
-        });
-
-        var mergeCountStr = AnsiConsole.Ask<string>("Сколько монет объединить в стопку:");
-        if (!int.TryParse(mergeCountStr, out var mergeCount) || mergeCount < 2) return;
-        if (mergeCount > selectedGroup.Count()) mergeCount = selectedGroup.Count();
-
-        AnsiConsole.MarkupLine($"[green]Объединено {mergeCount} монет в стопку[/]");
-    }
-
     private void ShowTravel()
     {
         var cities = _cityRepository.GetAll();
@@ -566,7 +537,18 @@ public sealed class GameLoop
                 .AddChoices(otherCities.Select(c => _localization.Get(c.LocalizationKey)).ToList()));
 
         var destination = otherCities.First(c => _localization.Get(c.LocalizationKey) == destinationName);
-        var result = _travelService.Travel(_player, destination.Key, _gameTime);
+        
+        var result = _travelUseCase.Execute(new TravelInput
+        {
+            OriginCityKey = _player.CurrentCityKey,
+            DestinationCityKey = destination.Key
+        });
+
+        if (result.Success)
+        {
+            _player.CurrentCityKey = result.Data.DestinationCityKey;
+            _gameTime.Advance(result.Data.DaysTraveled);
+        }
 
         AnsiConsole.MarkupLine($"[yellow]{result.Message}[/]");
     }
@@ -574,9 +556,9 @@ public sealed class GameLoop
     private void ShowContracts()
     {
         var contracts = _contractRepository.GetByCity(_player.CurrentCityKey);
-
+        
         AnsiConsole.WriteLine("\n[bold]=== Контракты ===[/]");
-
+        
         if (contracts.Count == 0)
         {
             AnsiConsole.WriteLine("Контрактов нет.");
@@ -605,10 +587,13 @@ public sealed class GameLoop
 
     private void WaitDays()
     {
-        var daysStr = AnsiConsole.Ask<string>("Сколько дней ждать:");
-        if (!int.TryParse(daysStr, out var days) || days <= 0) return;
-
-        var result = _timeService.Wait(_gameTime, days);
-        AnsiConsole.MarkupLine($"[yellow]{result.Message}[/]");
+        var result = _waitTimeUseCase.Execute(new WaitTimeInput { Days = AnsiConsole.Ask<int>("Сколько дней ждать:") });
+        
+        if (result.Success)
+        {
+            _gameTime.Advance(result.Data.DaysPassed);
+        }
+        
+        AnsiConsole.MarkupLine($"[yellow]{result.Message} {_gameTime}[/]");
     }
 }
