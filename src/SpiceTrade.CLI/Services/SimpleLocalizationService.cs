@@ -45,7 +45,27 @@ public sealed class SimpleLocalizationService : ILocalizationService
         ["ui_season_spring"] = "Весна",
         ["ui_season_summer"] = "Лето",
         ["ui_season_autumn"] = "Осень",
-        ["ui_season_winter"] = "Зима"
+        ["ui_season_winter"] = "Зима",
+        
+        // Market UI
+        ["ui_market"] = "Рынок",
+        ["ui_your_inventory"] = "Ваш инвентарь",
+        ["ui_merchant"] = "Торговец",
+        ["ui_merchant_goods"] = "Товары",
+        ["ui_item"] = "Товар",
+        ["ui_price"] = "Цена",
+        ["ui_quantity"] = "Количество",
+        ["ui_choose_action"] = "Выберите действие",
+        ["ui_sell_what"] = "Что продать",
+        ["ui_buy_what"] = "Что купить",
+        ["ui_back"] = "Назад",
+        ["ui_inventory_empty"] = "Инвентарь пуст",
+        ["ui_available"] = "Доступно",
+        ["ui_sold"] = "Продано",
+        ["ui_bought"] = "Куплено",
+        ["ui_for"] = "за",
+        ["ui_not_enough_money"] = "Недостаточно денег!",
+        ["ui_not_enough_items"] = "Недостаточно товара!"
     };
 
     public string Get(string key) => _translations.GetValueOrDefault(key, key);
