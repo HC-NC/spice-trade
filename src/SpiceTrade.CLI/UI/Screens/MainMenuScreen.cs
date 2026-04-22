@@ -1,32 +1,66 @@
 using Spectre.Console;
+using Spectre.Console.Rendering;
 using SpiceTrade.CLI.Services;
+using SpiceTrade.CLI.Properties;
 
 namespace SpiceTrade.CLI.UI.Screens;
 
-public static class MainMenuScreen
+public class MainMenuScreen : IScreen
 {
-    public static int Show(string playerName, string cityName, int day, int month, int year, string season, decimal walletValue)
+    private int _selectedIndex = 0;
+    private readonly string[] _options = { "Загрузить игру", "Начать игру", "Настройки", "Выход" };
+
+    private FigletFont _smallFont;
+
+    public MainMenuScreen()
     {
-        var panel = new Panel($"[bold]{playerName}[/] в [yellow]{cityName}[/]\n{day}/{month}/{year} ({season})\nКошелёк: [green]{walletValue}[/]")
-            .Expand()
-            .RoundedBorder();
-
-        AnsiConsole.Write(panel);
-
-        var choice = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[bold]Что делать?[/]")
-                .AddChoices(new[] { "Рынок", "Инвентарь", "Путешествие", "Контракты", "Ждать", "Выход" }));
-
-        return choice switch
+        using (var ms = new MemoryStream(Resources.FigletFont_Small))
         {
-            "Рынок" => 1,
-            "Инвентарь" => 2,
-            "Путешествие" => 3,
-            "Контракты" => 4,
-            "Ждать" => 5,
-            "Выход" => 0,
-            _ => 0
-        };
+            _smallFont = FigletFont.Load(ms);
+        }
+    }
+
+    public IRenderable GetContent()
+    {
+        IRenderable logo = new FigletText(_smallFont, "SPICE TRADE").Centered().Color(Color.Gold1);
+
+        var menuTable = new Table().NoBorder().HideHeaders().AddColumn("Option");
+
+        for (int i = 0; i < _options.Length; i++)
+        {
+            if (i == _selectedIndex)
+                menuTable.AddRow($"[black on white] > {_options[i]} [/]");
+            else
+                menuTable.AddRow($"  {_options[i]}  ");
+        }
+
+        return new Rows(
+            logo,
+            new Text("\n"),
+            Align.Center(new Text("ГЛАВНОЕ МЕНЮ", new Style(Color.Grey))),
+            Align.Center(menuTable)
+        );
+    }
+
+    public IScreen? HandleInput(ConsoleKeyInfo key)
+    {
+        switch (key.Key)
+        {
+            case ConsoleKey.UpArrow:
+                _selectedIndex = Math.Max(0, _selectedIndex - 1);
+                break;
+            case ConsoleKey.DownArrow:
+                _selectedIndex = Math.Min(_options.Length - 1, _selectedIndex + 1);
+                break;
+            case ConsoleKey.Enter:
+                return ExecuteSelection();
+        }
+        return this;
+    }
+
+    private IScreen? ExecuteSelection()
+    {
+        if (_selectedIndex == 3) return null;
+        return this;
     }
 }

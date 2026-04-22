@@ -1,15 +1,18 @@
 using Spectre.Console;
 using SpiceTrade.Application.Services;
 using SpiceTrade.Application.UseCases;
+using SpiceTrade.CLI.Services;
+using SpiceTrade.CLI.UI;
+using SpiceTrade.CLI.UI.Screens;
 using SpiceTrade.Core;
 using SpiceTrade.Core.Entities;
 using SpiceTrade.Core.Enums;
 using SpiceTrade.Core.Interfaces;
 using SpiceTrade.Core.Services;
 using SpiceTrade.Core.ValueObjects;
-using SpiceTrade.CLI.Services;
 using SpiceTrade.Infrastructure.Providers;
 using SpiceTrade.Infrastructure.Repositories;
+using System.Reflection;
 
 namespace SpiceTrade.CLI.Game;
 
@@ -31,9 +34,12 @@ public sealed class GameLoop
     private readonly SellItemUseCase _sellItemUseCase;
     private readonly TravelUseCase _travelUseCase;
     private readonly WaitTimeUseCase _waitTimeUseCase;
+    private MarketScreen _marketScreen = null!;
 
     private Player _player = null!;
     private GameTime _gameTime = new();
+
+    private readonly string _version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Substring(0, 24) ?? "?";
 
     public GameLoop()
     {
@@ -53,13 +59,19 @@ public sealed class GameLoop
         _sellItemUseCase = new SellItemUseCase(_itemRepository, _cityRepository, _priceCalculator);
         _travelUseCase = new TravelUseCase(_cityRepository);
         _waitTimeUseCase = new WaitTimeUseCase();
+
+        _marketScreen = new MarketScreen(_itemRepository, _cityRepository, _coinTypeRepository, _priceCalculator, _coinValueService, _localization);
     }
 
     public void Start()
     {
+        AnsiConsole.Write(new Panel(
+            $"[bold yellow]Spice Trade[/]\n[dim]Version: {_version}[/]")
+            .Expand().NoBorder().BorderStyle(new Style(foreground: Color.Yellow)));
+        
         var choice = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
-                .Title("[bold yellow]Spice Trade[/]")
+                .Title("[bold]Выберите действие:[/]")
                 .AddChoices("Новая игра", "Загрузить игру", "Выход"));
 
         if (choice == "Выход") return;
@@ -157,52 +169,89 @@ public sealed class GameLoop
         };
     }
 
-    private void Run()
+    public void Run()
     {
-        while (true)
+        var layout = LayoutFactory.CreateRoot();
+        IScreen? currentScreen = new MainMenuScreen();
+
+        int lastWidth = AnsiConsole.Console.Profile.Width;
+        int lastHeight = AnsiConsole.Console.Profile.Height;
+
+        layout["Header"].Update(new Panel("").Border(BoxBorder.None));
+        layout["Footer"].Update(new Panel("").Border(BoxBorder.None));
+
+
+        AnsiConsole.Live(layout).Start(ctx =>
         {
-            AnsiConsole.Clear();
-            var seasonName = _localization.Get($"ui_season_{_gameTime.Season.ToString().ToLower()}");
-            var city = _cityRepository.Get(_player.CurrentCityKey);
-            var cityName = city != null ? _localization.Get(city.LocalizationKey) : "?";
-            var region = city?.Region ?? "?";
-            var walletValue = 0m;
-            foreach (var (coinTypeKey, count) in _player.Wallet.Stacks)
+            while (currentScreen != null)
             {
-                var sample = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
-                walletValue += _coinValueService.GetNominalValue(sample, region) * count;
+                if (AnsiConsole.Console.Profile.Width != lastWidth ||
+                AnsiConsole.Console.Profile.Height != lastHeight)
+                {
+                    lastWidth = AnsiConsole.Console.Profile.Width;
+                    lastHeight = AnsiConsole.Console.Profile.Height;
+
+                    Console.Clear();
+                    ctx.Refresh();
+                }
+
+                layout["Main"].Update(currentScreen.GetContent());
+                ctx.Refresh();
+
+                if (Console.KeyAvailable)
+                {
+                    var key = Console.ReadKey(true);
+                    currentScreen = currentScreen.HandleInput(key);
+                }
+
+                Thread.Sleep(50);
             }
+        });
 
-            ShowMainMenu(cityName, seasonName, walletValue);
+        //while (true)
+        //{
+        //    AnsiConsole.Clear();
+        //    var seasonName = _localization.Get($"ui_season_{_gameTime.Season.ToString().ToLower()}");
+        //    var city = _cityRepository.Get(_player.CurrentCityKey);
+        //    var cityName = city != null ? _localization.Get(city.LocalizationKey) : "?";
+        //    var region = city?.Region ?? "?";
+        //    var walletValue = 0m;
+        //    foreach (var (coinTypeKey, count) in _player.Wallet.Stacks)
+        //    {
+        //        var sample = new Coin { CoinTypeKey = coinTypeKey, Year = _gameTime.Year, Condition = 100 };
+        //        walletValue += _coinValueService.GetNominalValue(sample, region) * count;
+        //    }
 
-            var choice = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[bold]Что делать?[/]")
-                    .AddChoices("Рынок", "Инвентарь", "Кошелёк", "Путешествие", "Контракты", "Ждать", "Сохранить", "Выход"));
+        //    ShowMainMenu(cityName, seasonName, walletValue);
 
-            if (choice == "Выход") break;
+        //    var choice = AnsiConsole.Prompt(
+        //        new SelectionPrompt<string>()
+        //            .Title("[bold]Что делать?[/]")
+        //            .AddChoices("Рынок", "Инвентарь", "Кошелёк", "Путешествие", "Контракты", "Ждать", "Сохранить", "Выход"));
 
-            switch (choice)
-            {
-                case "Рынок": ShowMarket(); break;
-                case "Инвентарь": ShowInventory(); break;
-                case "Кошелёк": ShowWallet(); break;
-                case "Путешествие": ShowTravel(); break;
-                case "Контракты": ShowContracts(); break;
-                case "Ждать": WaitDays(); break;
-                case "Сохранить": SaveGame(); break;
-            }
+        //    if (choice == "Выход") break;
 
-            if (choice != "Выход")
-                AnsiConsole.Prompt(new TextPrompt<string>("\nEnter для продолжения...").AllowEmpty());
-        }
+        //    switch (choice)
+        //    {
+        //        case "Рынок": ShowMarket(); break;
+        //        case "Инвентарь": ShowInventory(); break;
+        //        case "Кошелёк": ShowWallet(); break;
+        //        case "Путешествие": ShowTravel(); break;
+        //        case "Контракты": ShowContracts(); break;
+        //        case "Ждать": WaitDays(); break;
+        //        case "Сохранить": SaveGame(); break;
+        //    }
 
-        AnsiConsole.WriteLine("До свидания!");
+        //    if (choice != "Выход")
+        //        AnsiConsole.Prompt(new TextPrompt<string>("\nEnter для продолжения...").AllowEmpty());
+        //}
+
+        //AnsiConsole.WriteLine("До свидания!");
     }
 
     private void ShowMainMenu(string cityName, string seasonName, decimal walletValue)
     {
-        var panel = new Panel($"[bold]{_player.Name}[/] в [yellow]{cityName}[/]\n{_gameTime.Day}/{_gameTime.Month}/{_gameTime.Year} ({seasonName})\nКошелёк: [green]{walletValue:F2}[/]")
+        var panel = new Panel($"[bold]{_player.Name}[/] в [yellow]{cityName}[/]\n{_gameTime.Day}/{_gameTime.Month}/{_gameTime.Year} ({seasonName})\nКошелёк: [green]{walletValue:F2}[/]\n[dim]Version: {_version}[/]")
             .Expand()
             .RoundedBorder();
         AnsiConsole.Write(panel);
@@ -210,83 +259,7 @@ public sealed class GameLoop
 
     private void ShowMarket()
     {
-        var items = _itemRepository.GetAll();
-        var season = _gameTime.Season.ToString();
-
-        AnsiConsole.MarkupLine("\n[bold]=== Рынок ===[/]");
-        var table = new Table().Expand();
-        table.AddColumn("Товар");
-        table.AddColumn("Цена");
-        table.AddColumn("Категория");
-
-        foreach (var itm in items)
-        {
-            var price = _priceCalculator.Calculate(itm.LocalizationKey, _player.CurrentCityKey, _gameTime.Season);
-            table.AddRow(_localization.Get(itm.LocalizationKey), price.ToString("F2"), itm.Category.ToString());
-        }
-
-        AnsiConsole.Write(table);
-
-        var action = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[bold]Что делать?[/]")
-                .AddChoices("Купить", "Продать", "Назад"));
-
-        if (action == "Назад") return;
-
-        var itemName = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("Выберите товар:")
-                .AddChoices(items.Select(i => _localization.Get(i.LocalizationKey)).ToList()));
-
-        var item = items.First(i => _localization.Get(i.LocalizationKey) == itemName);
-        var quantityStr = AnsiConsole.Ask<string>("Количество:");
-        if (!int.TryParse(quantityStr, out var quantity) || quantity <= 0) return;
-
-        if (action == "Купить")
-        {
-            var result = _buyItemUseCase.Execute(new BuyItemInput
-            {
-                PlayerId = _player.Name,
-                ItemKey = item.LocalizationKey,
-                Quantity = quantity,
-                CityKey = _player.CurrentCityKey,
-                Season = season
-            });
-
-            if (result.Success)
-            {
-                var price = _priceCalculator.Calculate(item.LocalizationKey, _player.CurrentCityKey, _gameTime.Season);
-                var total = price * quantity;
-                if (TryTakeFromWallet(total))
-                {
-                    _player.Inventory.Add(item.LocalizationKey, quantity);
-                    AnsiConsole.MarkupLine(result.Message);
-                }
-                else
-                {
-                    AnsiConsole.MarkupLine("[red]Недостаточно средств![/]");
-                }
-            }
-            else
-            {
-                AnsiConsole.MarkupLine($"[red]{result.Message}[/]");
-            }
-        }
-        else
-        {
-            if (_player.Inventory.TryTake(item.LocalizationKey, quantity))
-            {
-                var price = _priceCalculator.Calculate(item.LocalizationKey, _player.CurrentCityKey, _gameTime.Season);
-                var total = price * quantity;
-                AddToWallet(total);
-                AnsiConsole.MarkupLine($"[green]Продано {quantity} x {_localization.Get(item.LocalizationKey)} за {total:F2}[/]");
-            }
-            else
-            {
-                AnsiConsole.MarkupLine("[red]Недостаточно товара![/]");
-            }
-        }
+        _marketScreen.Show(_player, _gameTime);
     }
 
     private bool TryTakeFromWallet(decimal amount)
@@ -380,7 +353,7 @@ public sealed class GameLoop
 
     private void ShowInventory()
     {
-        AnsiConsole.WriteLine("\n[bold]=== Инвентарь ===[/]");
+        AnsiConsole.MarkupLine("\n[bold]=== Инвентарь ===[/]");
         var table = new Table().Expand();
         table.AddColumn("Товар");
         table.AddColumn("Количество");
@@ -405,7 +378,7 @@ public sealed class GameLoop
         var city = _cityRepository.Get(_player.CurrentCityKey);
         var region = city?.Region ?? "?";
 
-        AnsiConsole.WriteLine("\n[bold]=== Кошелёк ===[/]");
+        AnsiConsole.MarkupLine("\n[bold]=== Кошелёк ===[/]");
         
         var stacks = _player.Wallet.Stacks;
         var table = new Table().Expand();
@@ -445,7 +418,7 @@ public sealed class GameLoop
 
     private void ShowExchange()
     {
-        AnsiConsole.WriteLine("\n[bold]=== Размен ===[/]");
+        AnsiConsole.MarkupLine("\n[bold]=== Размен ===[/]");
         
         var coinTypes = _coinTypeRepository.GetAll();
         var fromType = AnsiConsole.Prompt(
@@ -516,7 +489,7 @@ public sealed class GameLoop
         var cities = _cityRepository.GetAll();
         var otherCities = cities.Where(c => c.Key != _player.CurrentCityKey).ToList();
 
-        AnsiConsole.WriteLine("\n[bold]=== Путешествие ===[/]");
+        AnsiConsole.MarkupLine("\n[bold]=== Путешествие ===[/]");
         var table = new Table().Expand();
         table.AddColumn("Город");
         table.AddColumn("Регион");
@@ -557,7 +530,7 @@ public sealed class GameLoop
     {
         var contracts = _contractRepository.GetByCity(_player.CurrentCityKey);
         
-        AnsiConsole.WriteLine("\n[bold]=== Контракты ===[/]");
+        AnsiConsole.MarkupLine("\n[bold]=== Контракты ===[/]");
         
         if (contracts.Count == 0)
         {
